@@ -173,14 +173,13 @@ void UnloadWeapon(int client, int weapon)
 	SetEntPropEnt(weapon, Prop_Send, "m_hOwner", oldOwner);
 }
 
-stock void SendAmmoUpdate(int client)
+void SendAmmoUpdate(int client)
 {
-	PrintToServer("AmmoUpdate");
 	StartMessageOne("AmmoUpdate", client);
 	EndMessage();
 }
 
-stock bool IsValidClient(int client)
+bool IsValidClient(int client)
 {
 	return 0 < client <= MaxClients && IsClientInGame(client);
 }
