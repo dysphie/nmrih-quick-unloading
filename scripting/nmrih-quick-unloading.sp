@@ -1,16 +1,18 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <dhooks>
 
 #pragma semicolon 1
 #pragma newdecls required
 
-public Plugin myinfo = {
-    name        = "[NMRiH] Quick Unloading",
-    author      = "Dysphie",
-    description = "Fetch ammo by pressing E on dropped weapons",
-    version     = "1.0.0",
-    url         = ""
+public Plugin myinfo = 
+{
+	name = "[NMRiH] Quick Unloading",
+	author = "Dysphie",
+	description = "Fetch ammo by pressing E on dropped weapons",
+	version = "1.1.0",
+	url = ""
 };
 
 Handle hUnloadWeapon;
@@ -18,10 +20,9 @@ Handle hGetWeaponWeight;
 Handle hGetAmmoCarryWeight;
 bool lateloaded;
 
-ConVar hSndNoSpace;
-ConVar hSndEmpty;
-ConVar hSndGrab;
 ConVar hInvMaxCarry;
+ConVar hNudgeAmt;
+ConVar hSndGrab;
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
@@ -31,61 +32,30 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
-	SetUpSDKCalls();
+	GameData gamedata = new GameData("quick-unload.games");
+	SetUpSDKCalls(gamedata);
+	delete gamedata;
 
 	hInvMaxCarry = FindConVar("inv_maxcarry");
-
-	hSndNoSpace = CreateConVar("sm_quickunload_snd_nospace", 
-		"ui/vote_failed.wav",
-		"Sound to play when player lacks inventory space to grab the ammo");
-
-	hSndEmpty = CreateConVar("sm_quickunload_snd_empty", 
-		"weapons/firearms/hndg_beretta92fs/Beretta92_DryFire.wav",
-		"Sound to play when a player tries to unload an empty gun");
-
-	hSndGrab = CreateConVar("sm_quickunload_snd_grab", 
-		"player/ammo_pickup_01.wav",
+	hNudgeAmt = CreateConVar("sm_quickunload_nudge_force", "50.0");
+	hSndGrab = CreateConVar("sm_quickunload_snd_grab", "player/ammo_pickup_01.wav",
 		"Sound to play when player grabs ammo from a gun");
 
-	hSndNoSpace.AddChangeHook(OnSndChanged);
-	hSndEmpty.AddChangeHook(OnSndChanged);
 	hSndGrab.AddChangeHook(OnSndChanged);
+
+	AutoExecConfig();
 
 	if (lateloaded)
 	{
-		int maxEnts = GetEntityCount();
+		int maxEnts = GetMaxEntities();
 		for (int e = MaxClients+1; e < maxEnts; e++)
 			if (IsValidEntity(e) && IsEntityWeapon(e) && UsesPrimaryAmmo(e))
 				SDKHook(e, SDKHook_Use, OnWeaponUse);		
 	}
 }
 
-public void OnSndChanged(ConVar convar, const char[] oldValue, const char[] newValue)
+void SetUpSDKCalls(GameData gamedata)
 {
-	if (newValue[0])
-		PrecacheSound(newValue);
-}
-
-public void OnMapStart()
-{
-	char buffer[PLATFORM_MAX_PATH];
-	hSndNoSpace.GetString(buffer, sizeof(buffer));
-	if (buffer[0])
-		PrecacheSound(buffer);
-
-	hSndEmpty.GetString(buffer, sizeof(buffer));
-	if (buffer[0])
-		PrecacheSound(buffer);
-
-	hSndGrab.GetString(buffer, sizeof(buffer));
-	if (buffer[0])
-		PrecacheSound(buffer);
-}
-
-void SetUpSDKCalls()
-{
-	GameData gamedata = new GameData("quick-unload.games");
-
 	StartPrepSDKCall(SDKCall_Entity);
 	PrepSDKCall_SetFromConf(gamedata, SDKConf_Signature, "UnloadWeapon");
 	hUnloadWeapon = EndPrepSDKCall();
@@ -104,14 +74,26 @@ void SetUpSDKCalls()
 	PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
 	hGetAmmoCarryWeight = EndPrepSDKCall();
 	if (!hGetAmmoCarryWeight)
-		SetFailState("Failed to set up SDKCall for GetAmmoCarryWeight");
+		SetFailState("Failed to set up SDKCall for GetAmmoCarryWeight");	
+}
 
-	delete gamedata;	
+public void OnSndChanged(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	if (newValue[0])
+		PrecacheSound(newValue);
+}
+
+public void OnMapStart()
+{
+	char buffer[PLATFORM_MAX_PATH];
+	hSndGrab.GetString(buffer, sizeof(buffer));
+	if (buffer[0])
+		PrecacheSound(buffer);
 }
 
 public void OnEntityCreated(int entity, const char[] classname)
 {
-	if (IsEntityWeapon(entity) && UsesPrimaryAmmo(entity))
+	if (IsValidEdict(entity) && IsEntityWeapon(entity) && UsesPrimaryAmmo(entity))
 		SDKHook(entity, SDKHook_Use, OnWeaponUse);
 }
 
@@ -124,9 +106,11 @@ public Action OnWeaponUse(int weapon, int activator, int client, UseType type, f
 	if (activeWeapon == -1)
 		return Plugin_Continue;
 
-	if (GetAmmoType(activeWeapon) != GetAmmoType(weapon))
+	int wantedType = GetAmmoType(activeWeapon);
+	if (wantedType == -1 || wantedType != GetAmmoType(weapon))
 		return Plugin_Continue;
 
+	
 	char sound[PLATFORM_MAX_PATH];
 	int targetWeaponAmmo = GetWeaponAmmo(weapon);
 	if (targetWeaponAmmo > 0)
@@ -139,20 +123,28 @@ public Action OnWeaponUse(int weapon, int activator, int client, UseType type, f
 			hSndGrab.GetString(sound, sizeof(sound));
 			EmitSoundToAll(sound, client);
 			SendAmmoUpdate(client);
+			NudgeWeapon(client, weapon);
+			return Plugin_Handled;
 		}
-		else
-		{
-			hSndNoSpace.GetString(sound, sizeof(sound));
-			EmitSoundToClient(client, sound, client);
-		}
-	}
-	else
-	{
-		hSndEmpty.GetString(sound, sizeof(sound));
-		EmitSoundToClient(client, sound, weapon);
 	}
 	
-	return Plugin_Handled;
+	return Plugin_Continue;
+}
+
+void NudgeWeapon(int client, int weapon)
+{
+	float goalPos[3];
+	GetClientEyePosition(client, goalPos);
+
+	float curPos[3];
+	GetEntPropVector(weapon, Prop_Data, "m_vecAbsOrigin", curPos);
+
+	float dirVec[3];
+	MakeVectorFromPoints(curPos, goalPos, dirVec);
+	NormalizeVector(dirVec, dirVec);
+	ScaleVector(dirVec, hNudgeAmt.FloatValue);
+
+	TeleportEntity(weapon, .velocity=dirVec);
 }
 
 int GetWeaponAmmo(int weapon)
