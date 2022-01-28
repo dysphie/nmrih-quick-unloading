@@ -17,8 +17,8 @@ public Plugin myinfo =
 
 bool lateloaded;
 ConVar cvNudgeAmt;
-ConVar cvWeightPerAmmo;
 ConVar cvMaxCarry;
+int ammoWeight;
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
@@ -29,7 +29,18 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 public void OnPluginStart()
 {
 	cvMaxCarry = FindConVar("inv_maxcarry");
-	cvWeightPerAmmo = FindConVar("inv_ammoweight");
+
+	ConVar cvAmmoWeight = FindConVar("inv_ammoweight");
+	if (cvAmmoWeight) 
+	{
+		ammoWeight = cvAmmoWeight.IntValue;
+		cvAmmoWeight.AddChangeHook(OnAmmoWeightCvarChange);
+	} 
+	else 
+	{
+		ammoWeight = 5;
+	}
+
 	cvNudgeAmt = CreateConVar("sm_quickunload_nudge_force", "50.0");
 
 	AutoExecConfig();
@@ -41,6 +52,13 @@ public void OnPluginStart()
 			if (IsValidEdict(e) && IsEntityWeapon(e))
 				OnWeaponCreated(e);	
 	}
+}
+
+void OnAmmoWeightCvarChange(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	ammoWeight = StringToInt(newValue);
+	if (ammoWeight < 1)
+		ammoWeight = 1;
 }
 
 public void OnEntityCreated(int e, const char[] classname)
@@ -96,12 +114,8 @@ int UnloadWeapon(int client, int weapon)
 	if (ammoBoxes <= 0)
 		return false;
 
-	int ammoBoxWeight = cvWeightPerAmmo.IntValue;
-	if (ammoBoxWeight < 1)
-		ammoBoxWeight = 1;
-
 	int maxWeight = GetAvailableWeight(client);
-	int takeBoxes = maxWeight / ammoBoxes * ammoBoxWeight;
+	int takeBoxes = maxWeight / ammoBoxes * ammoWeight;
 	if (takeBoxes > ammoBoxes)
 		takeBoxes = ammoBoxes;
 
