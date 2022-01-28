@@ -3,8 +3,12 @@ Inspired by [Contagion](https://steamcommunity.com/app/238430), this plugin allo
 
 Video demonstration: https://youtu.be/bpmkoax5J9g
 
+## Installation
+- Grab the latest zip from the [releases](https://github.com/dysphie/nmrih-quick-unloading/releases) section.
+- Extract the contents into `addons/sourcemod`
+- Refresh the plugin list (`sm plugins refresh` or `sm plugins load nmrih-quick-unloading` in server console)
+
 * Cvars:
-  * `sm_quickunload_snd_grab` - Sound to play when player successfully grabs ammo from a gun
   * `sm_quickunload_nudge_force` - Magnitude of nudge effect on unloaded weapons
  
  
