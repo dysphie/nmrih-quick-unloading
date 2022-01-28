@@ -8,7 +8,7 @@ Video demonstration: https://youtu.be/bpmkoax5J9g
 - Extract the contents into `addons/sourcemod`
 - Refresh the plugin list (`sm plugins refresh` or `sm plugins load nmrih-quick-unloading` in server console)
 
-* Cvars:
+## Cvars:
   * `sm_quickunload_nudge_force` - Magnitude of nudge effect on unloaded weapons
  
  
