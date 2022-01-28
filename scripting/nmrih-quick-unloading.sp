@@ -1,7 +1,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
-#include <dhooks>
+#include <vscript_proxy>
 
 #pragma semicolon 1
 #pragma newdecls required
@@ -11,18 +11,14 @@ public Plugin myinfo =
 	name = "[NMRiH] Quick Unloading",
 	author = "Dysphie",
 	description = "Fetch ammo by pressing E on dropped weapons",
-	version = "1.1.0",
+	version = "1.2.0",
 	url = ""
 };
 
-Handle hUnloadWeapon;
-Handle hGetWeaponWeight;
-Handle hGetAmmoCarryWeight;
 bool lateloaded;
-
-ConVar hInvMaxCarry;
-ConVar hNudgeAmt;
-ConVar hSndGrab;
+ConVar cvNudgeAmt;
+ConVar cvWeightPerAmmo;
+ConVar cvMaxCarry;
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
@@ -32,16 +28,9 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
-	GameData gamedata = new GameData("quick-unload.games");
-	SetUpSDKCalls(gamedata);
-	delete gamedata;
-
-	hInvMaxCarry = FindConVar("inv_maxcarry");
-	hNudgeAmt = CreateConVar("sm_quickunload_nudge_force", "50.0");
-	hSndGrab = CreateConVar("sm_quickunload_snd_grab", "player/ammo_pickup_01.wav",
-		"Sound to play when player grabs ammo from a gun");
-
-	hSndGrab.AddChangeHook(OnSndChanged);
+	cvMaxCarry = FindConVar("inv_maxcarry");
+	cvWeightPerAmmo = FindConVar("inv_ammoweight");
+	cvNudgeAmt = CreateConVar("sm_quickunload_nudge_force", "50.0");
 
 	AutoExecConfig();
 
@@ -49,52 +38,15 @@ public void OnPluginStart()
 	{
 		int maxEnts = GetMaxEntities();
 		for (int e = MaxClients+1; e < maxEnts; e++)
-			if (IsValidEntity(e) && IsEntityWeapon(e) && UsesPrimaryAmmo(e))
-				SDKHook(e, SDKHook_Use, OnWeaponUse);		
+			if (IsValidEdict(e) && IsEntityWeapon(e))
+				OnWeaponCreated(e);	
 	}
 }
 
-void SetUpSDKCalls(GameData gamedata)
+public void OnEntityCreated(int e, const char[] classname)
 {
-	StartPrepSDKCall(SDKCall_Entity);
-	PrepSDKCall_SetFromConf(gamedata, SDKConf_Signature, "UnloadWeapon");
-	hUnloadWeapon = EndPrepSDKCall();
-	if (!hUnloadWeapon)
-		SetFailState("Failed to set up SDKCall for UnloadWeapon");
-
-	StartPrepSDKCall(SDKCall_Entity);
-	PrepSDKCall_SetFromConf(gamedata, SDKConf_Virtual, "GetWeaponWeight");
-	PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
-	hGetWeaponWeight = EndPrepSDKCall();
-	if (!hGetWeaponWeight)
-		SetFailState("Failed to set up SDKCall for GetWeaponWeight");
-
-	StartPrepSDKCall(SDKCall_Player);
-	PrepSDKCall_SetFromConf(gamedata, SDKConf_Signature, "GetAmmoCarryWeight");
-	PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
-	hGetAmmoCarryWeight = EndPrepSDKCall();
-	if (!hGetAmmoCarryWeight)
-		SetFailState("Failed to set up SDKCall for GetAmmoCarryWeight");	
-}
-
-public void OnSndChanged(ConVar convar, const char[] oldValue, const char[] newValue)
-{
-	if (newValue[0])
-		PrecacheSound(newValue);
-}
-
-public void OnMapStart()
-{
-	char buffer[PLATFORM_MAX_PATH];
-	hSndGrab.GetString(buffer, sizeof(buffer));
-	if (buffer[0])
-		PrecacheSound(buffer);
-}
-
-public void OnEntityCreated(int entity, const char[] classname)
-{
-	if (IsValidEdict(entity) && IsEntityWeapon(entity) && UsesPrimaryAmmo(entity))
-		SDKHook(entity, SDKHook_Use, OnWeaponUse);
+	if (IsValidEdict(e) && IsEntityWeapon(e))
+		OnWeaponCreated(e);
 }
 
 public Action OnWeaponUse(int weapon, int activator, int client, UseType type, float value)
@@ -106,26 +58,14 @@ public Action OnWeaponUse(int weapon, int activator, int client, UseType type, f
 	if (activeWeapon == -1)
 		return Plugin_Continue;
 
-	int wantedType = GetAmmoType(activeWeapon);
-	if (wantedType == -1 || wantedType != GetAmmoType(weapon))
+	int wantedType = GetPrimaryAmmoType(activeWeapon);
+	if (wantedType == -1 || wantedType != GetPrimaryAmmoType(weapon))
 		return Plugin_Continue;
 
-	
-	char sound[PLATFORM_MAX_PATH];
-	int targetWeaponAmmo = GetWeaponAmmo(weapon);
-	if (targetWeaponAmmo > 0)
+	if (UnloadWeapon(client, weapon))
 	{
-		UnloadWeapon(client, weapon);
-
-		int taken = targetWeaponAmmo - GetWeaponAmmo(weapon);
-		if (taken > 0)
-		{
-			hSndGrab.GetString(sound, sizeof(sound));
-			EmitSoundToAll(sound, client);
-			SendAmmoUpdate(client);
-			NudgeWeapon(client, weapon);
-			return Plugin_Handled;
-		}
+		NudgeWeapon(client, weapon);
+		return Plugin_Handled;
 	}
 	
 	return Plugin_Continue;
@@ -142,27 +82,53 @@ void NudgeWeapon(int client, int weapon)
 	float dirVec[3];
 	MakeVectorFromPoints(curPos, goalPos, dirVec);
 	NormalizeVector(dirVec, dirVec);
-	ScaleVector(dirVec, hNudgeAmt.FloatValue);
+	ScaleVector(dirVec, cvNudgeAmt.FloatValue);
 
-	TeleportEntity(weapon, .velocity=dirVec);
+	TeleportEntity(weapon, NULL_VECTOR, NULL_VECTOR, dirVec);
 }
 
-int GetWeaponAmmo(int weapon)
+int UnloadWeapon(int client, int weapon)
 {
-	return GetEntProp(weapon, Prop_Send, "m_iClip1");
+	if (!UsesPrimaryAmmo(weapon) || !UsesClipsForAmmo1(weapon))
+		return false;
+	
+	int ammoBoxes = GetEntProp(weapon, Prop_Send, "m_iClip1");
+	if (ammoBoxes <= 0)
+		return false;
+
+	int ammoBoxWeight = cvWeightPerAmmo.IntValue;
+	if (ammoBoxWeight < 1)
+		ammoBoxWeight = 1;
+
+	int maxWeight = GetAvailableWeight(client);
+	int takeBoxes = maxWeight / ammoBoxes * ammoBoxWeight;
+	if (takeBoxes > ammoBoxes)
+		takeBoxes = ammoBoxes;
+
+	SetEntProp(weapon, Prop_Send, "m_iClip1", ammoBoxes - takeBoxes);	
+	GivePlayerAmmo(client, takeBoxes, GetPrimaryAmmoType(weapon));
+	SendAmmoUpdate(client);
+	return true;
 }
 
-int GetAmmoType(int weapon)
+bool UsesClipsForAmmo1(int weapon)
+{
+	return RunEntVScriptBool(weapon, "UsesClipsForAmmo1()");
+}
+
+int GetPrimaryAmmoType(int weapon)
 {
 	return GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType");
 }
 
-void UnloadWeapon(int client, int weapon)
+int GetAvailableWeight(int client)
 {
-	int oldOwner = GetEntPropEnt(weapon, Prop_Send, "m_hOwner");
-	SetEntPropEnt(weapon, Prop_Send, "m_hOwner", client);
-	SDKCall(hUnloadWeapon, weapon);
-	SetEntPropEnt(weapon, Prop_Send, "m_hOwner", oldOwner);
+	return max(0, cvMaxCarry.IntValue - GetCarriedWeight(client));
+}
+
+int GetCarriedWeight(int client)
+{
+	return RunEntVScriptInt(client, "GetCarriedWeight()");
 }
 
 void SendAmmoUpdate(int client)
@@ -176,6 +142,11 @@ bool IsValidClient(int client)
 	return 0 < client <= MaxClients && IsClientInGame(client);
 }
 
+void OnWeaponCreated(int weapon)
+{
+	SDKHook(weapon, SDKHook_Use, OnWeaponUse);
+}
+
 bool IsEntityWeapon(int entity)
 {
 	return HasEntProp(entity, Prop_Send, "m_flAmmoCheckStart");
@@ -183,36 +154,21 @@ bool IsEntityWeapon(int entity)
 
 bool UsesPrimaryAmmo(int weapon)
 {
-	return GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType") >= 0;
+	return GetPrimaryAmmoType(weapon) >= 0;
 }
 
 int GetWeaponWeight(int weapon)
 {
-	return SDKCall(hGetWeaponWeight, weapon);
-}
-
-int GetCarriedWeight(int client)
-{
-	int itemWeight = GetEntProp(client, Prop_Send, "_carriedWeight");
-	return itemWeight + GetAmmoCarryWeight(client);
-}
-
-int GetAmmoCarryWeight(int client)
-{
-	return SDKCall(hGetAmmoCarryWeight, client);
+	return RunEntVScriptInt(weapon, "GetWeight()");
 }
 
 bool CanPickUpWeapon(int client, int weapon)
 {
-	int carriedWeight = GetCarriedWeight(client);
-	int weaponWeight = GetWeaponWeight(weapon);
-
-	if (carriedWeight + weaponWeight > hInvMaxCarry.IntValue)
+	if (GetAvailableWeight(client) < GetWeaponWeight(weapon))
 		return false;
 
 	char classname[32];
 	GetEntityClassname(weapon, classname, sizeof(classname));
-
 	return !PlayerOwnsWeapon(client, classname);
 }
 
@@ -233,4 +189,9 @@ bool PlayerOwnsWeapon(int client, const char[] classname)
 	}
 
 	return false;
+}
+
+any max(any a, any b)
+{
+	return (a > b) ? a : b;
 }
